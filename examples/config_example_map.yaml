@@ -4,16 +4,16 @@ run_name: 'map_wide'
 perf_num: 6
 
 # map paths
-map_path: './example_map'
+map_path: './examples/example_map'
 map_ext: '.png'
 
 # starting pose for map
-sx: 0.7
+sx: 0.3
 sy: 0.0
-stheta: 1.37079632679
+stheta: 1.6
 
 # raceline path and indices
-wpt_path: './example_waypoints.csv'
+wpt_path: './examples/example_waypoints.csv'
 wpt_delim: ';'
 wpt_rowskip: 3
 wpt_xind: 1

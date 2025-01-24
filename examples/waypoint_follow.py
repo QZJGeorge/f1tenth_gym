@@ -304,7 +304,7 @@ def main():
         "vgain": 1.375,
     }  # 0.90338203837889}
 
-    with open("config_example_map.yaml") as file:
+    with open("examples/config_example_map.yaml") as file:
         conf_dict = yaml.load(file, Loader=yaml.FullLoader)
     conf = Namespace(**conf_dict)
 
