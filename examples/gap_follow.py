@@ -8,6 +8,9 @@ from pyglet.gl import GL_POINTS
 from f110_gym.envs.base_classes import Integrator
 
 
+MAX_STEER = 0.52
+
+
 def find_largest_gap(ranges, min_dist=2.0):
     """
     Find the largest contiguous set of indices in 'ranges'
@@ -15,14 +18,10 @@ def find_largest_gap(ranges, min_dist=2.0):
         (start_index, end_index)
     of the largest gap.
     """
-
-    # Mark which indices are above threshold
     above_threshold = ranges >= min_dist
-
     max_len = 0
     max_start = 0
     max_end = 0
-
     curr_start = None
     for i, val in enumerate(above_threshold):
         if val:
@@ -36,48 +35,27 @@ def find_largest_gap(ranges, min_dist=2.0):
                     max_start = curr_start
                     max_end = i - 1
                 curr_start = None
-    # Check at end in case the last segment extends to the final index
     if curr_start is not None:
         length = len(above_threshold) - curr_start
         if length > max_len:
             max_len = length
             max_start = curr_start
             max_end = len(above_threshold) - 1
-
     return max_start, max_end
 
 
 def compute_steer_angle_for_gap(start_idx, end_idx):
     """
-    Given the largest gap, compute the midpoint index and convert
-    that index into an angle (in radians). Then map to steering.
-    - Index 0 is angle 0°, index 1440 => 360° (each index ~ 0.25°).
-    - Convert the index to a heading relative to forward = 0°.
-    - Return the desired steering angle (radians) scaled by a gain.
+    Compute steering angle toward the midpoint of the largest gap.
     """
-
-    # Midpoint index
     mid_idx = (start_idx + end_idx) // 2
-
-    # Each index is 0.25 degrees
     resolution_deg = 0.25
     angle_deg = resolution_deg * mid_idx - 90.0
-
-    # Convert degrees to radians
     angle_rad = np.deg2rad(angle_deg)
-
-    # A typical approach is to scale the heading angle to a steering angle.
-    STEERING_GAIN = 1.0  # Adjust or tune this gain as needed
+    STEERING_GAIN = 1.0
     desired_steer = STEERING_GAIN * angle_rad
-
-    # Saturate at the car's steering limits
-    max_steer = 0.52
-    if desired_steer > max_steer:
-        desired_steer = max_steer
-    elif desired_steer < -max_steer:
-        desired_steer = -max_steer
-
-    return desired_steer
+    # Clamp the steering angle
+    return max(min(desired_steer, MAX_STEER), -MAX_STEER)
 
 
 def main():
@@ -95,18 +73,19 @@ def main():
         integrator=Integrator.RK4,
     )
 
+    # This dictionary will store the current speed & steering values
+    render_info = {"speed": 0.0, "steer": 0.0}
+
     visited_points = []
     drawn_points = []
-    last_recorded_point = None  # Track the last recorded waypoint
 
     def render_callback(env_renderer):
-        # Follow the car
         e = env_renderer
+        # Adjust camera based on car's position
         x_coords = e.cars[0].vertices[::2]
         y_coords = e.cars[0].vertices[1::2]
         top, bottom = max(y_coords), min(y_coords)
         left, right = min(x_coords), max(x_coords)
-
         e.score_label.x = left
         e.score_label.y = top - 700
         e.left = left - 800
@@ -114,7 +93,17 @@ def main():
         e.top = top + 800
         e.bottom = bottom - 800
 
-        # Draw trajectory points
+        # Overwrite the default score_label to show speed & steering
+        current_speed = render_info["speed"]
+        current_steer = render_info["steer"]
+        # Display the steer both in radians and degrees (optional)
+        steer_degs = np.rad2deg(current_steer)
+        e.score_label.text = (
+            f"Speed: {current_speed:.2f} m/s  |  "
+            f"Steer: {current_steer:.2f} rad ({steer_degs:.1f} deg)"
+        )
+
+        # Plot the path of the car (visited points)
         for i, pt in enumerate(visited_points):
             scaled_x = 50.0 * pt[0]
             scaled_y = 50.0 * pt[1]
@@ -126,7 +115,7 @@ def main():
                     GL_POINTS,
                     None,
                     ("v3f/stream", [scaled_x, scaled_y, 0.0]),
-                    ("c3B/stream", [255, 0, 0]),  # Red
+                    ("c3B/stream", [255, 0, 0]),
                 )
                 drawn_points.append(b)
 
@@ -139,63 +128,57 @@ def main():
     print("Gap-Follow Enabled with Constant Speed.")
     print("Press CTRL+C in the console to terminate early.")
 
-    constant_speed = 5.0  # m/s
+    max_speed = 5.0  # m/s
+    min_speed = 1.0  # m/s
 
-    # In-memory storage for data
     collected_data = []
+    experiment_start_time = time.time()
+    last_save_time = experiment_start_time
 
     try:
         while not done:
-            # --- GAP FOLLOW ALGORITHM ---
-            # 1) Extract LiDAR scan
             lidar_ranges = np.array(obs["scans"]).flatten()
-            lidar_ranges = lidar_ranges[360:1080]
+            # Take only the front 180 degrees or any region you want
+            lidar_ranges = lidar_ranges[360:1081]
 
-            # 2) Find the largest gap above some threshold
             MIN_RANGE_THRESHOLD = 2.0
             start_idx, end_idx = find_largest_gap(lidar_ranges, MIN_RANGE_THRESHOLD)
-
-            # 3) Compute steering angle toward the middle of that gap
             steer = compute_steer_angle_for_gap(start_idx, end_idx)
 
-            # Current car position
+            # Update speed based on steering angle
+            de_accel_ratio = max(0.0, (1.0 - abs(steer) / MAX_STEER * 2))
+            desired_speed = de_accel_ratio * (max_speed - min_speed) + min_speed
+
+            # Store them in render_info so that render_callback can see them
+            render_info["speed"] = desired_speed
+            render_info["steer"] = steer
+
+            # For logging
+            current_time = time.time()
+            if current_time - last_save_time >= 0.1:
+                last_save_time = current_time
+                elapsed_time = current_time - experiment_start_time
+                collected_data.append([elapsed_time, steer] + lidar_ranges.tolist())
+
+            # Save position for red dot drawing
             current_point = [obs["poses_x"][0], obs["poses_y"][0]]
-
-            # Check if the current point is at least 0.1 meters from the last recorded point
-            if (
-                last_recorded_point is None
-                or np.linalg.norm(
-                    np.array(current_point) - np.array(last_recorded_point)
-                )
-                >= 0.1
-            ):
-                # Update the last recorded point
-                last_recorded_point = current_point
-
-                # Store steer and lidar data in-memory
-                collected_data.append([steer] + lidar_ranges.tolist())
-
-            # Record visited points for rendering
             visited_points.append(current_point)
 
-            # Step the environment
-            action = np.array([[steer, constant_speed]])
+            # Take an action in the environment
+            action = np.array([[steer, desired_speed]])
             obs, step_reward, done, info = env.step(action)
 
-            # Render the environment
+            # Render the environment with updated callback
             env.render(mode="human")
 
-            # Small delay for stability
             time.sleep(0.01)
     except KeyboardInterrupt:
         print("\nSimulation terminated by user.")
     finally:
-        # Save all collected data to a CSV file
+        # Save CSV data
         with open("steering_and_lidar_data.csv", mode="w", newline="") as file:
             writer = csv.writer(file)
-            # Write the header row
-            writer.writerow(["steer"] + [f"lidar_{i}" for i in range(720)])
-            # Write the data
+            writer.writerow(["time", "steer"] + [f"lidar_{i}" for i in range(721)])
             writer.writerows(collected_data)
 
         env.close()
